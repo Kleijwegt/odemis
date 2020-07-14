@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-'''
+"""
 Created on 11 May 2020
 
 @author: Sabrina Rossberger, Kornee Kleijwegt
@@ -18,21 +18,29 @@ PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 Odemis. If not, see http://www.gnu.org/licenses/.
-'''
 
+These test cases can only be done using the simulator for the ASM.
+After install this can be starting using XXXXXX update this because this will change
+"""
+# TODO K.K. Add docstring with explanation on how to start  (latests, and stable) simulator ASM SERVER (replace XXXXXX)
+
+import math
+import os
 import time
 import logging
 import unittest
 import numpy
 import matplotlib.pyplot as plt
-from urllib.parse import urlparse
 
 from odemis import model
 
-# TODO K.K. will change package/folder name for next simulator
-from src.openapi_server.models.mega_field_meta_data import MegaFieldMetaData
+from openapi_server.models import CalibrationLoopParameters
+from openapi_server.models.mega_field_meta_data import MegaFieldMetaData
 
-from odemis.driver.technolution import AcquisitionServer, MirrorDescanner
+from odemis.driver.technolution import AcquisitionServer, DATA_CONTENT_TO_ASM
+
+# Export TEST_NOHW = 1 to prevent using the real hardware
+TEST_NOHW = (os.environ.get("TEST_NOHW", "0") != "0")  # Default to Hw testing
 
 URL = "http://localhost:8080/v2"
 
@@ -44,17 +52,17 @@ CHILDREN_ASM = {"EBeamScanner"   : CONFIG_SCANNER,
                 "MirrorDescanner": CONFIG_DESCANNER,
                 "MPPC"           : CONFIG_MPPC}
 EXTRNAL_STORAGE = {"host"     : "localhost",
-                           "username" : "username",
-                           "password" : "password",
-                           "directory": "directory"}
-
-
-# TODO Comment here on how to start simulator ASM SERVER and that this entire test cannot be runned without the simulator
+                   "username" : "username",
+                   "password" : "password",
+                   "directory": "directory"}
 
 
 class TestAcquisitionServer(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if TEST_NOHW:
+            raise unittest.SkipTest('No simulator for the ASM and HwCompetents present. Skipping tests.')
+
         cls.ASM_manager = AcquisitionServer("ASM", "main", URL, children=CHILDREN_ASM, externalStorage=EXTRNAL_STORAGE)
         for child in cls.ASM_manager.children.value:
             if child.name == CONFIG_MPPC["name"]:
@@ -73,8 +81,7 @@ class TestAcquisitionServer(unittest.TestCase):
         pass
 
     def tearDown(self):
-        self.MPPC.terminate()
-        time.sleep(0.2)
+        pass
 
     def test_get_API_call(self):
         clockFrequencyData = self.ASM_manager.ASM_API_Get_Call("/scan/clock_frequency", 200)
@@ -86,40 +93,135 @@ class TestAcquisitionServer(unittest.TestCase):
         self.assertIsInstance(clock_freq, int)
 
     def test_post_API_call(self):
+        # Tests most basic post call, finish_mega_field (can be called multiple times without causing a problem)
         expected_status_code = 204
         status_code = self.ASM_manager.ASM_API_Post_Call("/scan/finish_mega_field", expected_status_code)
         self.assertEqual(status_code, expected_status_code)
 
     def test_externalStorageURL_VA(self):
         # Setting URL
-        test_url = urlparse('ftp://testname:testword@testable.com/Test_images')
+        test_url = 'ftp://testname:testword@testable.com/Test_images'
         self.ASM_manager.externalStorageURL.value = test_url
         self.assertEqual(self.ASM_manager.externalStorageURL.value, test_url)
 
         # Test Scheme
-        self.ASM_manager.externalStorageURL.value = urlparse('wrong://testname:testword@testable.com/Test_images')
+        with self.assertRaises(ValueError):
+            self.ASM_manager.externalStorageURL.value = 'wrong://testname:testword@testable.com/Test_images'
         self.assertEqual(self.ASM_manager.externalStorageURL.value, test_url)
 
         # Test User
-        self.ASM_manager.externalStorageURL.value = urlparse('ftp://wrong%user:testword@testable.com/Test_images')
+        with self.assertRaises(ValueError):
+            self.ASM_manager.externalStorageURL.value = 'ftp://wrong%user:testword@testable.com/Test_images'
         self.assertEqual(self.ASM_manager.externalStorageURL.value, test_url)
 
         # Test Password
-        self.ASM_manager.externalStorageURL.value = urlparse('ftp://testname:testwrong%$word@testable.com/Test_images')
+        with self.assertRaises(ValueError):
+            self.ASM_manager.externalStorageURL.value = 'ftp://testname:testwrong%$word@testable.com/Test_images'
         self.assertEqual(self.ASM_manager.externalStorageURL.value, test_url)
 
         # Test Host
-        self.ASM_manager.externalStorageURL.value = urlparse('ftp://testname:testword@non-test-%-able.com/Test_images')
+        with self.assertRaises(ValueError):
+            self.ASM_manager.externalStorageURL.value = 'ftp://testname:testword@non-test-%-able.com/Test_images'
         self.assertEqual(self.ASM_manager.externalStorageURL.value, test_url)
 
         # Test Path
-        self.ASM_manager.externalStorageURL.value = urlparse('ftp://testname:testable.com/Inval!d~Path')
+        with self.assertRaises(ValueError):
+            self.ASM_manager.externalStorageURL.value = 'ftp://testname:testable.com/Inval!d~Path'
         self.assertEqual(self.ASM_manager.externalStorageURL.value, test_url)
+
+    def test_calibration_loop(self):
+        descanner = self.MirrorDescanner
+        scanner = self.EBeamScanner
+        ASM = self.ASM_manager
+
+        # Catch errors due to an incorrect defined set of calibration parameters so it is possible to check the
+        # types in the object. If the types are incorrect the same error will be found later in the same test.
+        try:
+            ASM.calibrationMode.value = True
+        except Exception as error:
+            logging.error("During activating the calibration mode the error %s occurred" % error)
+
+        # Check types of calibration parameters (output send to the ASM) holding only primitive datatypes (int, float, string but not lists)
+        calibration_parameters = ASM._calibrationParameters
+        self.assertIsInstance(calibration_parameters, CalibrationLoopParameters)
+        self.assertIsInstance(calibration_parameters.descan_rotation, float)
+        self.assertIsInstance(calibration_parameters.x_descan_offset, int)
+        self.assertIsInstance(calibration_parameters.y_descan_offset, int)
+        self.assertIsInstance(calibration_parameters.dwell_time, int)
+        self.assertIsInstance(calibration_parameters.scan_rotation, float)
+        self.assertIsInstance(calibration_parameters.x_scan_delay, int)
+        self.assertIsInstance(calibration_parameters.x_scan_offset, float)
+        self.assertIsInstance(calibration_parameters.y_scan_offset, float)
+
+        # Check descan setpoints
+        self.assertIsInstance(calibration_parameters.x_descan_setpoints, list)
+        self.assertIsInstance(calibration_parameters.y_descan_setpoints, list)
+        for x_setpoint, y_setpoint in zip(calibration_parameters.x_descan_setpoints,
+                                          calibration_parameters.y_descan_setpoints):
+            self.assertIsInstance(x_setpoint, int)
+            self.assertIsInstance(y_setpoint, int)
+
+        # Check scan setpoints
+        self.assertIsInstance(calibration_parameters.x_descan_setpoints, list)
+        self.assertIsInstance(calibration_parameters.y_descan_setpoints, list)
+        for x_setpoint, y_setpoint in zip(calibration_parameters.x_descan_setpoints,
+                                          calibration_parameters.y_descan_setpoints):
+            self.assertIsInstance(x_setpoint, int)
+            self.assertIsInstance(y_setpoint, int)
+
+        # Test multiple times to check if start and stopping goes correctly
+        for a in range(0, 3):
+            # Start calibration loop
+            ASM.calibrationMode.value = True
+            # Check if VA's have the correct value
+            self.assertEqual(ASM.calibrationMode.value, True)
+            self.assertEqual(descanner.scanGain.value, (1.0, 0.0))
+            self.assertEqual(scanner.scanGain.value, (1.0, 1.0))
+
+            # Check subscription list
+            self.assertEqual(len(ASM.calibrationFrequency._listeners), 1)
+            # Descanner subscriptions
+            self.assertEqual(len(descanner.rotation._listeners), 1)
+            self.assertEqual(len(descanner.scanOffset._listeners), 1)
+            self.assertEqual(len(descanner.scanGain._listeners), 1)
+
+            # Scanner subscriptions
+            self.assertEqual(len(scanner.dwellTime._listeners), 1)
+            self.assertEqual(len(scanner.rotation._listeners), 1)
+            self.assertEqual(len(scanner.scanDelay._listeners), 1)
+            self.assertEqual(len(scanner.dwellTime._listeners), 1)
+            self.assertEqual(len(scanner.scanOffset._listeners), 1)
+            self.assertEqual(len(scanner.scanGain._listeners), 1)
+
+            # Stop calibration loop
+            ASM.calibrationMode.value = False
+            # Check if VA's have the correct value
+            self.assertEqual(ASM.calibrationMode.value, False)
+            self.assertEqual(descanner.scanGain.value, (1.0, 1.0))
+            self.assertEqual(scanner.scanGain.value, (1.0, 1.0))
+
+            # Check subscription list
+            self.assertEqual(len(ASM.calibrationFrequency._listeners), 0)
+            # Descanner subscriptions
+            self.assertEqual(len(descanner.rotation._listeners), 0)
+            self.assertEqual(len(descanner.scanOffset._listeners), 0)
+            self.assertEqual(len(descanner.scanGain._listeners), 0)
+
+            # Scanner subscriptions
+            self.assertEqual(len(scanner.dwellTime._listeners), 0)
+            self.assertEqual(len(scanner.rotation._listeners), 0)
+            self.assertEqual(len(scanner.scanDelay._listeners), 0)
+            self.assertEqual(len(scanner.dwellTime._listeners), 0)
+            self.assertEqual(len(scanner.scanOffset._listeners), 0)
+            self.assertEqual(len(scanner.scanGain._listeners), 0)
 
 
 class TestEBeamScanner(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if TEST_NOHW:
+            raise unittest.SkipTest('No simulator for the ASM and HwCompetents present. Skipping tests.')
+
         cls.ASM_manager = AcquisitionServer("ASM", "main", URL, children=CHILDREN_ASM, externalStorage=EXTRNAL_STORAGE)
         for child in cls.ASM_manager.children.value:
             if child.name == CONFIG_MPPC["name"]:
@@ -301,32 +403,35 @@ class TestEBeamScanner(unittest.TestCase):
         self.MPPC.acqDelay.value = self.MPPC.acqDelay.range[1]
 
         # Check if small scanDelay values are allowed
-        self.EBeamScanner.scanDelay.value = (int(0.1 * max_scanDelay), int(0.1 * max_y_prescan_lines))
+        self.EBeamScanner.scanDelay.value = (0.1 * max_scanDelay, 0.1 * max_y_prescan_lines)
         self.assertEqual(self.EBeamScanner.scanDelay.value, (0.1 * max_scanDelay, 0.1 * max_y_prescan_lines))
 
         # Check if big scanDelay values are allowed
-        self.EBeamScanner.scanDelay.value = (int(0.9 * max_scanDelay), int(0.9 * max_y_prescan_lines))
+        self.EBeamScanner.scanDelay.value = (0.9 * max_scanDelay, 0.9 * max_y_prescan_lines)
         self.assertEqual(self.EBeamScanner.scanDelay.value, (0.9 * max_scanDelay, 0.9 * max_y_prescan_lines))
 
         # Check if VA refuses to set limits outside allowed range
         with self.assertRaises(IndexError):
-            self.EBeamScanner.scanDelay.value = (int(1.2 * max_scanDelay), int(1.2 * max_y_prescan_lines))
+            self.EBeamScanner.scanDelay.value = (1.2 * max_scanDelay, 1.2 * max_y_prescan_lines)
         self.assertEqual(self.EBeamScanner.scanDelay.value, (0.9 * max_scanDelay, 0.9 * max_y_prescan_lines))
 
         with self.assertRaises(IndexError):
-            self.EBeamScanner.scanDelay.value = (int(-0.2 * max_scanDelay), int(-0.2 * max_y_prescan_lines))
+            self.EBeamScanner.scanDelay.value = (-0.2 * max_scanDelay, -0.2 * max_y_prescan_lines)
         self.assertEqual(self.EBeamScanner.scanDelay.value, (0.9 * max_scanDelay, 0.9 * max_y_prescan_lines))
 
         # Check if setter prevents from setting negative values for self.EBeamScanner.parent._mppc.acqDelay.value - self.EBeamScanner.scanDelay.value[0]
         self.EBeamScanner.scanDelay.value = (min_scanDelay, min_y_prescan_lines)
         self.EBeamScanner.parent._mppc.acqDelay.value = 0.5 * max_scanDelay
-        self.EBeamScanner.scanDelay.value = (int(0.6 * max_scanDelay), int(0.6 * max_y_prescan_lines))
+        self.EBeamScanner.scanDelay.value = (0.6 * max_scanDelay, 0.6 * max_y_prescan_lines)
         self.assertEqual(self.EBeamScanner.scanDelay.value, (min_scanDelay, min_y_prescan_lines))
 
 
 class TestMirrorDescanner(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if TEST_NOHW:
+            raise unittest.SkipTest('No simulator for the ASM and HwComponents present. Skipping tests.')
+
         cls.ASM_manager = AcquisitionServer("ASM", "main", URL, children=CHILDREN_ASM, externalStorage=EXTRNAL_STORAGE)
         for child in cls.ASM_manager.children.value:
             if child.name == CONFIG_MPPC["name"]:
@@ -415,43 +520,112 @@ class TestMirrorDescanner(unittest.TestCase):
             self.MirrorDescanner.scanGain.value = (1.2 * min_scanGain, 1.2 * min_scanGain)
         self.assertEqual(self.MirrorDescanner.scanGain.value, (0.9 * max_scanGain, 0.9 * max_scanGain))
 
-    def test_getAdjFlybackTime(self):
-        def flybackAdjustment():
-            scan_to_acq_delay = self.MPPC.acqDelay.value - self.EBeamScanner.scanDelay.value[0]
-            return (scan_to_acq_delay + self.EBeamScanner.dwellTime.value *
-                      self.MPPC.cellCompleteResolution.value[0]) // self.MirrorDescanner.clockPeriod.value
+    def test_getXAcqSetpoints(self):
+        """
+        After each change the same properties of the testcases are checked, first the length (total number of setpoints)
+        then the expected range of the values are checked. The maximum is not necessarily reached because this is
+        dependent on the descan_period/dwell_time
+        """
 
-        # Check default settings
-        self.assertEqual(self.MirrorDescanner.getAdjFlybackTime(),
-                         self.MirrorDescanner.physicalFlybackTime + flybackAdjustment())
-        self.assertIsInstance(self.MirrorDescanner.getAdjFlybackTime(), float)
+        def expected_setpoint_length(dwellTime, physcicalFlybackTime, X_cell_size, descan_period):
+            scanning_setpoints = math.ceil((dwellTime * X_cell_size) / descan_period)
+            flyback_setpoints = math.ceil(physcicalFlybackTime / descan_period)
+            return scanning_setpoints + flyback_setpoints
 
-        # Enter test parameters and check those
-        self.MirrorDescanner.physicalFlybackTime = 100e-6
-        self.MPPC.acqDelay.value = 5e-5
-        self.EBeamScanner.dwellTime.value = 5e-6
+        def expected_setpoint_range(X_scan_offset, X_cell_size, X_scan_gain):
+            lowest_expected_value = X_scan_offset - 0.5 * X_cell_size * X_scan_gain
+            highest_expected_value = X_scan_offset + 0.5 * X_cell_size * X_scan_gain
+            return int(lowest_expected_value), int(highest_expected_value)
 
-        self.assertEqual(self.MirrorDescanner.getAdjFlybackTime(),
-                         self.MirrorDescanner.physicalFlybackTime + flybackAdjustment())
-        self.assertIsInstance(self.MirrorDescanner.getAdjFlybackTime(), float)
+        # Check default values
+        X_descan_setpoints = self.MirrorDescanner.getXAcqSetpoints()
+        self.assertEqual(len(X_descan_setpoints),
+                         expected_setpoint_length(self.EBeamScanner.dwellTime.value,
+                                                  self.MirrorDescanner.physicalFlybackTime,
+                                                  self.MPPC.cellCompleteResolution.value[0],
+                                                  self.MirrorDescanner.clockPeriod.value))
+        setpoint_range = expected_setpoint_range(self.MirrorDescanner.scanOffset.value[0],
+                                                 self.MPPC.cellCompleteResolution.value[0],
+                                                 self.MirrorDescanner.scanGain.value[0])
+        self.assertEqual(min(X_descan_setpoints), setpoint_range[0])
+        # Not said that during rise/scan phase the maximum is actually reached, only for very big dwell times this is so
+        self.assertLessEqual(max(X_descan_setpoints), setpoint_range[1])
 
-    def test_getAcqSetpoints(self):
+        # Check with changing the dwell_time
         self.EBeamScanner.dwellTime.value = 4e-6
-        #Now just plotting the acquistion set points
-        X_descan_setpoints, Y_descan_setpoints = self.MirrorDescanner.getAcqSetpoints()
+        X_descan_setpoints = self.MirrorDescanner.getXAcqSetpoints()
+        self.assertEqual(len(X_descan_setpoints),
+                         expected_setpoint_length(self.EBeamScanner.dwellTime.value,
+                                                  self.MirrorDescanner.physicalFlybackTime,
+                                                  self.MPPC.cellCompleteResolution.value[0],
+                                                  self.MirrorDescanner.clockPeriod.value))
+        setpoint_range = expected_setpoint_range(self.MirrorDescanner.scanOffset.value[0],
+                                                 self.MPPC.cellCompleteResolution.value[0],
+                                                 self.MirrorDescanner.scanGain.value[0])
+        self.assertEqual(min(X_descan_setpoints), setpoint_range[0])
+        self.assertLessEqual(max(X_descan_setpoints), setpoint_range[1])
 
-        time_line = numpy.arange(0, len(X_descan_setpoints) * self.MirrorDescanner.clockPeriod.value,
-                                 self.MirrorDescanner.clockPeriod.value)
+    def test_getYAcqSetpoints(self):
+        """
+        After each change the same properties of the testcases are checked, first the range of the values in the Y
+        setpouints is checked, then the length (total number of setpoints) is checked.
+        """
+
+        def expected_setpoint_range(Y_scan_offset, Y_cell_size, Y_scan_gain):
+            lowest_expected_value = Y_scan_offset - 0.5 * Y_cell_size * Y_scan_gain
+            # (Y_cell_size - 2) because like the 'range' command the last increment should not be used (-2 because
+            # the multiplication by 0.5)
+            highest_expected_value = Y_scan_offset + 0.5 * (Y_cell_size - 2) * Y_scan_gain
+            return int(lowest_expected_value), int(highest_expected_value)
+
+        # Check default values
+        Y_descan_setpoints = self.MirrorDescanner.getYAcqSetpoints()
+        self.assertEqual((min(Y_descan_setpoints), max(Y_descan_setpoints)),
+                         expected_setpoint_range(self.MirrorDescanner.scanOffset.value[1],
+                                                 self.MPPC.cellCompleteResolution.value[1],
+                                                 self.MirrorDescanner.scanGain.value[1]))
+        self.assertEqual(len(Y_descan_setpoints), self.MPPC.cellCompleteResolution.value[1])
+
+        # Check with changing gain
+        self.MirrorDescanner.scanGain.value = (10.0, 7.0)  # only change Y value to a prime number
+        Y_descan_setpoints = self.MirrorDescanner.getYAcqSetpoints()
+        self.assertEqual((min(Y_descan_setpoints), max(Y_descan_setpoints)),
+                         expected_setpoint_range(self.MirrorDescanner.scanOffset.value[1],
+                                                 self.MPPC.cellCompleteResolution.value[1],
+                                                 self.MirrorDescanner.scanGain.value[1]))
+        self.assertEqual(len(Y_descan_setpoints), self.MPPC.cellCompleteResolution.value[1])
+
+        # Change the cell_size
+        self.MPPC.cellCompleteResolution.value = (777, 777)  # only change Y value to a prime number
+        Y_descan_setpoints = self.MirrorDescanner.getYAcqSetpoints()
+        self.assertEqual((min(Y_descan_setpoints), max(Y_descan_setpoints)),
+                         expected_setpoint_range(self.MirrorDescanner.scanOffset.value[1],
+                                                 self.MPPC.cellCompleteResolution.value[1],
+                                                 self.MirrorDescanner.scanGain.value[1]))
+        self.assertEqual(len(Y_descan_setpoints), self.MPPC.cellCompleteResolution.value[1])
+
+    @unittest.skip  # Skip plotting acq setpoints
+    def test_plot_getAcqSetpoints(self):
+        """
+        Test case for inspecting global behaviour of the setpoint profiles.
+        """
+        self.EBeamScanner.dwellTime.value = 4e-6  # Increase dwell time to see steps in the profile better
+        self.MirrorDescanner.physicalFlybackTime = 25e-4  # Increase flybacktime to see its effect in the profile better
+
+        X_descan_setpoints = self.MirrorDescanner.getXAcqSetpoints()
+        Y_descan_setpoints = self.MirrorDescanner.getYAcqSetpoints()
 
         fig, axs = plt.subplots(2)
-        axs[0].plot(time_line[:10000:], X_descan_setpoints[:10000:], "xb")
-        axs[1].plot(time_line[:10000:], Y_descan_setpoints[:10000:], "or")
+        axs[0].plot(numpy.tile(X_descan_setpoints[::], 4), "xb")
+        axs[1].plot(Y_descan_setpoints[::], "or")
         plt.show()
+
 
 class TestMPPC(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        pass
+        if TEST_NOHW:
+            raise unittest.SkipTest('No simulator for the ASM and HwCompetents present. Skipping tests.')
 
     @classmethod
     def tearDownClass(cls):
@@ -478,7 +652,7 @@ class TestMPPC(unittest.TestCase):
         self.assertEqual(self.MPPC.filename.value, "testing_file_name")
 
     def test_acqDelay_VA(self):
-        # set _mppc.acqDelay > max_scanDelay to allow all options to be set
+        # Set _mppc.acqDelay > max_scanDelay to allow all values to be set
         max_acqDelay = self.MPPC.acqDelay.range[1]
 
         # Check if big acqDelay values are allowed
@@ -486,8 +660,8 @@ class TestMPPC(unittest.TestCase):
         self.assertEqual(self.MPPC.acqDelay.value, 0.9 * max_acqDelay)
 
         # Lower EBeamScanner scanDelay value so that acqDelay can be changed freely
-        self.EBeamScanner.scanDelay.value = (1, 1)
-        self.assertEqual(self.EBeamScanner.scanDelay.value, (1, 1))
+        self.EBeamScanner.scanDelay.value = (2e-10, 2e-10)
+        self.assertEqual(self.EBeamScanner.scanDelay.value, (2e-10, 2e-10))
 
         # Check if small acqDelay values are allowed
         self.MPPC.acqDelay.value = 0.1 * max_acqDelay
@@ -502,105 +676,187 @@ class TestMPPC(unittest.TestCase):
         self.assertEqual(self.MPPC.acqDelay.value, max_acqDelay)
         self.assertEqual(self.EBeamScanner.scanDelay.value, self.EBeamScanner.scanDelay.range[1])
 
+    def test_dataContentVA(self):
+        for key in DATA_CONTENT_TO_ASM:
+            self.MPPC.dataContent.value = key
+            self.assertEqual(self.MPPC.dataContent.value, key)
+
+        # Test incorrect input
+        with self.assertRaises(IndexError):
+            self.MPPC.dataContent.value = "incorrect input"
+        self.assertEqual(self.MPPC.dataContent.value, key)  # Check if variable remains unchanged
+
     def test_cellTranslation(self):
-        self.MPPC.cellTranslation.value = [[[10 + j, 20 + j] for j in range(i, i + self.MPPC._shape[0])]
-                                           for i in
-                                           range(0, self.MPPC._shape[1] * self.MPPC._shape[0], self.MPPC._shape[0])]
+        # Testing assigning of different values. Which are chosen so that the value corresponds with the placement in
+        # the tuple
+        self.MPPC.cellTranslation.value = \
+            tuple(tuple((10 + j, 20 + j) for j in range(i, i + self.MPPC.shape[0]))
+                  for i in range(0, self.MPPC.shape[1] * self.MPPC.shape[0], self.MPPC.shape[0]))
+
         self.assertEqual(
                 self.MPPC.cellTranslation.value,
-                [[[10 + j, 20 + j] for j in range(i, i + self.MPPC._shape[0])]
-                 for i in range(0, self.MPPC._shape[1] * self.MPPC._shape[0], self.MPPC._shape[0])]
-        )
+                tuple(tuple((10 + j, 20 + j) for j in range(i, i + self.MPPC.shape[0]))
+                      for i in range(0, self.MPPC.shape[1] * self.MPPC.shape[0], self.MPPC.shape[0])))
 
         # Changing the digital gain back to something simple
-        self.MPPC.cellTranslation.value = [[[50, 50]] * self.MPPC._shape[0]] * self.MPPC._shape[1]
+        self.MPPC.cellTranslation.value = tuple(
+                tuple((50, 50) for i in range(0, self.MPPC.shape[0])) for i in range(0, self.MPPC.shape[1]))
 
         # Test missing rows
-        self.MPPC.cellTranslation.value = [[[50, 50]] * (self.MPPC._shape[0] - 1)] * self.MPPC._shape[1]
-        self.assertEqual(self.MPPC.cellTranslation.value, [[[50, 50]] * self.MPPC._shape[0]] * self.MPPC._shape[1])
+        with self.assertRaises(ValueError):
+            self.MPPC.cellTranslation.value = tuple(tuple((50, 50) for i in range(0, self.MPPC.shape[0] - 1))
+                                                    for i in range(0, self.MPPC.shape[1]))
+        self.assertEqual(self.MPPC.cellTranslation.value,
+                         tuple(tuple((50, 50) for i in range(0, self.MPPC.shape[0])) for i in
+                               range(0, self.MPPC.shape[1])))
 
         # Test missing column
-        self.MPPC.cellTranslation.value = [[[50, 50]] * (self.MPPC._shape[0])] * (self.MPPC._shape[1] - 1)
-        self.assertEqual(self.MPPC.cellTranslation.value, [[[50, 50]] * self.MPPC._shape[0]] * self.MPPC._shape[1])
+        with self.assertRaises(ValueError):
+            self.MPPC.cellTranslation.value = tuple(tuple((50, 50) for i in range(0, self.MPPC.shape[0]))
+                                                    for i in range(0, self.MPPC.shape[1] - 1))
+        self.assertEqual(self.MPPC.cellTranslation.value,
+                         tuple(tuple((50, 50) for i in range(0, self.MPPC.shape[0])) for i in
+                               range(0, self.MPPC.shape[1])))
 
         # Test wrong number of coordinates
-        self.MPPC.cellTranslation.value = [[[50]] * self.MPPC._shape[0]] * self.MPPC._shape[1]
-        self.assertEqual(self.MPPC.cellTranslation.value, [[[50, 50]] * self.MPPC._shape[0]] * self.MPPC._shape[1])
+        with self.assertRaises(ValueError):
+            self.MPPC.cellTranslation.value = tuple(
+                    tuple((50) for i in range(0, self.MPPC.shape[0])) for i in range(0, self.MPPC.shape[1]))
+        self.assertEqual(self.MPPC.cellTranslation.value,
+                         tuple(tuple((50, 50) for i in range(0, self.MPPC.shape[0])) for i in
+                               range(0, self.MPPC.shape[1])))
 
-        self.MPPC.cellTranslation.value = [[[50, 50, 50]] * self.MPPC._shape[0]] * self.MPPC._shape[1]
-        self.assertEqual(self.MPPC.cellTranslation.value, [[[50, 50]] * self.MPPC._shape[0]] * self.MPPC._shape[1])
+        with self.assertRaises(ValueError):
+            self.MPPC.cellTranslation.value = tuple(tuple((50, 50, 50) for i in range(0, self.MPPC.shape[0]))
+                                                    for i in range(0, self.MPPC.shape[1]))
+        self.assertEqual(self.MPPC.cellTranslation.value,
+                         tuple(tuple((50, 50) for i in range(0, self.MPPC.shape[0])) for i in
+                               range(0, self.MPPC.shape[1])))
 
         # Test wrong type
-        self.MPPC.cellTranslation.value = [[[50.0, 50]] * (self.MPPC._shape[0])] * self.MPPC._shape[1]
-        self.assertEqual(self.MPPC.cellTranslation.value, [[[50, 50]] * self.MPPC._shape[0]] * self.MPPC._shape[1])
+        with self.assertRaises(ValueError):
+            self.MPPC.cellTranslation.value = tuple(tuple((50.0, 50) for i in range(0, self.MPPC.shape[0]))
+                                                    for i in range(0, self.MPPC.shape[1]))
+        self.assertEqual(self.MPPC.cellTranslation.value,
+                         tuple(tuple((50, 50) for i in range(0, self.MPPC.shape[0])) for i in
+                               range(0, self.MPPC.shape[1])))
 
-        self.MPPC.cellTranslation.value = [[[50, 50.0]] * (self.MPPC._shape[0])] * self.MPPC._shape[1]
-        self.assertEqual(self.MPPC.cellTranslation.value, [[[50, 50]] * self.MPPC._shape[0]] * self.MPPC._shape[1])
+        with self.assertRaises(ValueError):
+            self.MPPC.cellTranslation.value = tuple(tuple((50, 50.0) for i in range(0, self.MPPC.shape[0]))
+                                                    for i in range(0, self.MPPC.shape[1]))
+        self.assertEqual(self.MPPC.cellTranslation.value,
+                         tuple(tuple((50, 50) for i in range(0, self.MPPC.shape[0])) for i in
+                               range(0, self.MPPC.shape[1])))
 
-        # Test minimum value setter
-        self.MPPC.cellTranslation.value = [[[-1, 50]] * self.MPPC._shape[0]] * self.MPPC._shape[1]
-        self.assertEqual(self.MPPC.cellTranslation.value, [[[50, 50]] * self.MPPC._shape[0]] * self.MPPC._shape[1])
+        with self.assertRaises(ValueError):
+            self.MPPC.cellTranslation.value = tuple(tuple((-1, 50) for i in range(0, self.MPPC.shape[0]))
+                                                    for i in range(0, self.MPPC.shape[1]))
+        self.assertEqual(self.MPPC.cellTranslation.value,
+                         tuple(tuple((50, 50) for i in range(0, self.MPPC.shape[0])) for i in
+                               range(0, self.MPPC.shape[1])))
 
-        self.MPPC.cellTranslation.value = [[[50, -1]] * self.MPPC._shape[0]] * self.MPPC._shape[1]
-        self.assertEqual(self.MPPC.cellTranslation.value, [[[50, 50]] * self.MPPC._shape[0]] * self.MPPC._shape[1])
+        with self.assertRaises(ValueError):
+            self.MPPC.cellTranslation.value = tuple(tuple((50, -1) for i in range(0, self.MPPC.shape[0]))
+                                                    for i in range(0, self.MPPC.shape[1]))
+        self.assertEqual(self.MPPC.cellTranslation.value,
+                         tuple(tuple((50, 50) for i in range(0, self.MPPC.shape[0])) for i in
+                               range(0, self.MPPC.shape[1])))
 
     def test_celldarkOffset(self):
+        # Testing assigning different values. Which are chosen so that the value corresponds with the placement in
+        # the tuple
         self.MPPC.cellDarkOffset.value = \
-            [[j for j in range(i, i + self.MPPC._shape[0])] for i in
-             range(0, self.MPPC._shape[1] * self.MPPC._shape[0], self.MPPC._shape[0])]
+            tuple(tuple(j for j in range(i, i + self.MPPC.shape[0]))
+                  for i in range(0, self.MPPC.shape[1] * self.MPPC.shape[0], self.MPPC.shape[0]))
 
         self.assertEqual(
                 self.MPPC.cellDarkOffset.value,
-                [[j for j in range(i, i + self.MPPC._shape[0])] for i in
-                 range(0, self.MPPC._shape[1] * self.MPPC._shape[0], self.MPPC._shape[0])]
+                tuple(tuple(j for j in range(i, i + self.MPPC.shape[0]))
+                      for i in range(0, self.MPPC.shape[1] * self.MPPC.shape[0], self.MPPC.shape[0]))
         )
 
         # Changing the digital gain back to something simple
-        self.MPPC.cellDarkOffset.value = [[0] * self.MPPC._shape[0]] * self.MPPC._shape[1]
+        self.MPPC.cellDarkOffset.value = tuple(
+                tuple(0 for i in range(0, self.MPPC.shape[0])) for i in range(0, self.MPPC.shape[1]))
 
         # Test missing rows
-        self.MPPC.cellDarkOffset.value = [[1] * (self.MPPC._shape[0] - 1)] * self.MPPC._shape[1]
-        self.assertEqual(self.MPPC.cellDarkOffset.value, [[0] * self.MPPC._shape[0]] * self.MPPC._shape[1])
+        with self.assertRaises(ValueError):
+            self.MPPC.cellDarkOffset.value = tuple(tuple(0 for i in range(0, self.MPPC.shape[0] - 1))
+                                                   for i in range(0, self.MPPC.shape[1]))
+        self.assertEqual(self.MPPC.cellDarkOffset.value,
+                         tuple(tuple(0 for i in range(0, self.MPPC.shape[0])) for i in range(0, self.MPPC.shape[1])))
 
         # Test missing column
-        self.MPPC.cellDarkOffset.value = [[2] * (self.MPPC._shape[0])] * (self.MPPC._shape[1] - 1)
-        self.assertEqual(self.MPPC.cellDarkOffset.value, [[0] * self.MPPC._shape[0]] * self.MPPC._shape[1])
+        with self.assertRaises(ValueError):
+            self.MPPC.cellDarkOffset.value = tuple(tuple(0 for i in range(0, self.MPPC.shape[0]))
+                                                   for i in range(0, self.MPPC.shape[1] - 1))
+        self.assertEqual(self.MPPC.cellDarkOffset.value,
+                         tuple(tuple(0 for i in range(0, self.MPPC.shape[0])) for i in range(0, self.MPPC.shape[1])))
 
         # Test wrong type
-        self.MPPC.cellDarkOffset.value = [[3.0] * (self.MPPC._shape[0])] * self.MPPC._shape[1]
-        self.assertEqual(self.MPPC.cellDarkOffset.value, [[0] * self.MPPC._shape[0]] * self.MPPC._shape[1])
+        with self.assertRaises(ValueError):
+            self.MPPC.cellDarkOffset.value = tuple(tuple(0.0 for i in range(0, self.MPPC.shape[0]))
+                                                   for i in range(0, self.MPPC.shape[1]))
+        self.assertEqual(self.MPPC.cellDarkOffset.value,
+                         tuple(tuple(0 for i in range(0, self.MPPC.shape[0])) for i in range(0, self.MPPC.shape[1])))
 
         # Test minimum value setter
-        self.MPPC.cellDarkOffset.value = [[-1] * (self.MPPC._shape[0])] * self.MPPC._shape[1]
-        self.assertEqual(self.MPPC.cellDarkOffset.value, [[0] * self.MPPC._shape[0]] * self.MPPC._shape[1])
+        with self.assertRaises(ValueError):
+            self.MPPC.cellDarkOffset.value = tuple(tuple(-1 for i in range(0, self.MPPC.shape[0]))
+                                                   for i in range(0, self.MPPC.shape[1]))
+        self.assertEqual(self.MPPC.cellDarkOffset.value,
+                         tuple(tuple(0 for i in range(0, self.MPPC.shape[0])) for i in range(0, self.MPPC.shape[1])))
 
-    def test_celldigitalGain(self):
-        self.MPPC.cellDigitalGain.value = [[float(j) for j in range(i, i + self.MPPC._shape[0])] for i in
-                                           range(0, self.MPPC._shape[1] * self.MPPC._shape[0], self.MPPC._shape[0])]
+    def test_cellDigitalGain(self):
+        # Testing assigning of different values. Which are chosen so that the value corresponds with the placement in
+        # the tuple
+        self.MPPC.cellDigitalGain.value = \
+            tuple(tuple(float(j) for j in range(i, i + self.MPPC.shape[0]))
+                  for i in range(0, self.MPPC.shape[1] * self.MPPC.shape[0], self.MPPC.shape[0]))
+
         self.assertEqual(
                 self.MPPC.cellDigitalGain.value,
-                [[float(j) for j in range(i, i + self.MPPC._shape[0])] for i in
-                 range(0, self.MPPC._shape[1] * self.MPPC._shape[0], self.MPPC._shape[0])]
+                tuple(tuple(float(j) for j in range(i, i + self.MPPC.shape[0]))
+                      for i in range(0, self.MPPC.shape[1] * self.MPPC.shape[0], self.MPPC.shape[0]))
         )
 
         # Changing the digital gain back to something simple
-        self.MPPC.cellDigitalGain.value = [[0.0] * self.MPPC._shape[0]] * self.MPPC._shape[1]
+        self.MPPC.cellDigitalGain.value = tuple(
+                tuple(0.0 for i in range(0, self.MPPC.shape[0])) for i in range(0, self.MPPC.shape[1]))
 
         # Test missing rows
-        self.MPPC.cellDigitalGain.value = [[1.0] * (self.MPPC._shape[0] - 1)] * self.MPPC._shape[1]
-        self.assertEqual(self.MPPC.cellDigitalGain.value, [[0.0] * self.MPPC._shape[0]] * self.MPPC._shape[1])
+        with self.assertRaises(ValueError):
+            self.MPPC.cellDigitalGain.value = tuple(tuple(0.0 for i in range(0, self.MPPC.shape[0] - 1))
+                                                    for i in range(0, self.MPPC.shape[1]))
+        self.assertEqual(self.MPPC.cellDigitalGain.value,
+                         tuple(tuple(0.0 for i in range(0, self.MPPC.shape[0])) for i in range(0, self.MPPC.shape[1])))
 
         # Test missing column
-        self.MPPC.cellDigitalGain.value = [[2.0] * (self.MPPC._shape[0])] * (self.MPPC._shape[1] - 1)
-        self.assertEqual(self.MPPC.cellDigitalGain.value, [[0.0] * self.MPPC._shape[0]] * self.MPPC._shape[1])
+        with self.assertRaises(ValueError):
+            self.MPPC.cellDigitalGain.value = tuple(tuple(0.0 for i in range(0, self.MPPC.shape[0]))
+                                                    for i in range(0, self.MPPC.shape[1] - 1))
+        self.assertEqual(self.MPPC.cellDigitalGain.value,
+                         tuple(tuple(0.0 for i in range(0, self.MPPC.shape[0])) for i in range(0, self.MPPC.shape[1])))
 
-        # Test wrong type
-        self.MPPC.cellDigitalGain.value = [[3] * (self.MPPC._shape[0])] * self.MPPC._shape[1]
-        self.assertEqual(self.MPPC.cellDigitalGain.value, [[0.0] * self.MPPC._shape[0]] * self.MPPC._shape[1])
+        # Test int as type (should be converted)
+        self.MPPC.cellDigitalGain.value = tuple(
+                tuple(int(0) for i in range(0, self.MPPC.shape[0])) for i in range(0, self.MPPC.shape[1]))
+        self.assertEqual(self.MPPC.cellDigitalGain.value,
+                         tuple(tuple(0.0 for i in range(0, self.MPPC.shape[0])) for i in range(0, self.MPPC.shape[1])))
+
+        # Test invalid type
+        with self.assertRaises(ValueError):
+            self.MPPC.cellDigitalGain.value = tuple(tuple('string_type' for i in range(0, self.MPPC.shape[0]))
+                                                    for i in range(0, self.MPPC.shape[1]))
+        self.assertEqual(self.MPPC.cellDigitalGain.value,
+                         tuple(tuple(0.0 for i in range(0, self.MPPC.shape[0])) for i in range(0, self.MPPC.shape[1])))
 
         # Test minimum value setter
-        self.MPPC.cellDigitalGain.value = [[- 3.0] * (self.MPPC._shape[0])] * self.MPPC._shape[1]
-        self.assertEqual(self.MPPC.cellDigitalGain.value, [[0.0] * self.MPPC._shape[0]] * self.MPPC._shape[1])
+        with self.assertRaises(ValueError):
+            self.MPPC.cellDigitalGain.value = tuple(tuple(-1.0 for i in range(0, self.MPPC.shape[0]))
+                                                    for i in range(0, self.MPPC.shape[1]))
+        self.assertEqual(self.MPPC.cellDigitalGain.value,
+                         tuple(tuple(0.0 for i in range(0, self.MPPC.shape[0])) for i in range(0, self.MPPC.shape[1])))
 
     def test_cellCompleteResolution(self):
         min_res = self.MPPC.cellCompleteResolution.range[0][0]
@@ -633,32 +889,81 @@ class TestMPPC(unittest.TestCase):
         Test which checks the MegaFieldMetadata object and the correctly ordering (row/column conversions) from the
         VA's to the MegaFieldMetadata object which is passed to the ASM
         """
-        self.MPPC.cellDigitalGain.value = [[float(j) for j in range(i, i + self.MPPC._shape[0])]
-                                           for i in range(0, self.MPPC._shape[1] * self.MPPC._shape[0],
-                                                          self.MPPC._shape[0])]
-
-        self.MPPC.cellTranslation.value = [[[10 + j, 20 + j] for j in range(i, i + self.MPPC._shape[0])]
-                                           for i in range(0, self.MPPC._shape[1] * self.MPPC._shape[0],
-                                                          self.MPPC._shape[0])]
-
         megafield_metadata = self.MPPC._assemble_megafield_metadata()
         self.assertIsInstance(megafield_metadata, MegaFieldMetaData)
-        self.assertEqual(len(megafield_metadata.cell_parameters), self.MPPC._shape[0] * self.MPPC._shape[1])
+
+        # Test attributes megafield_metadata holding only primitive datatypes (int, float, string but not lists)
+        self.assertIsInstance(megafield_metadata.mega_field_id, str)
+        self.assertIsInstance(megafield_metadata.storage_directory, str)
+        self.assertIsInstance(megafield_metadata.custom_data, str)
+        self.assertIsInstance(megafield_metadata.stage_position_x, float)
+        self.assertIsInstance(megafield_metadata.stage_position_x, float)
+        self.assertIsInstance(megafield_metadata.pixel_size, int)
+        self.assertIsInstance(megafield_metadata.dwell_time, int)
+        self.assertIsInstance(megafield_metadata.x_scan_to_acq_delay, int)
+        self.assertIsInstance(megafield_metadata.x_cell_size, int)
+        self.assertIsInstance(megafield_metadata.x_eff_cell_size, int)
+        self.assertIsInstance(megafield_metadata.x_scan_gain, float)
+        self.assertIsInstance(megafield_metadata.x_scan_offset, float)
+        self.assertIsInstance(megafield_metadata.x_descan_offset, int)
+        self.assertIsInstance(megafield_metadata.y_cell_size, int)
+        self.assertIsInstance(megafield_metadata.y_eff_cell_size, int)
+        self.assertIsInstance(megafield_metadata.y_scan_gain, float)
+        self.assertIsInstance(megafield_metadata.y_scan_offset, float)
+        self.assertIsInstance(megafield_metadata.y_descan_offset, int)
+        self.assertIsInstance(megafield_metadata.y_prescan_lines, int)
+        self.assertIsInstance(megafield_metadata.x_scan_delay, int)
+        self.assertIsInstance(megafield_metadata.scan_rotation, float)
+        self.assertIsInstance(megafield_metadata.descan_rotation, float)
+
+        # Test descan setpoints
+        self.assertIsInstance(megafield_metadata.x_descan_setpoints, list)
+        self.assertIsInstance(megafield_metadata.y_descan_setpoints, list)
+        for x_setpoint, y_setpoint in zip(megafield_metadata.x_descan_setpoints, megafield_metadata.y_descan_setpoints):
+            self.assertIsInstance(x_setpoint, int)
+            self.assertIsInstance(y_setpoint, int)
+
+        # Test cell_parameters
+        self.MPPC.cellTranslation.value = \
+            tuple(tuple((10 + j, 20 + j) for j in range(i, i + self.MPPC.shape[0]))
+                  for i in range(0, self.MPPC.shape[1] * self.MPPC.shape[0], self.MPPC.shape[0]))
+
+        self.MPPC.cellDarkOffset.value = \
+            tuple(tuple(j for j in range(i, i + self.MPPC.shape[0]))
+                  for i in range(0, self.MPPC.shape[1] * self.MPPC.shape[0], self.MPPC.shape[0]))
+
+        self.MPPC.cellDigitalGain.value = \
+            tuple(tuple(float(j) for j in range(i, i + self.MPPC.shape[0]))
+                  for i in range(0, self.MPPC.shape[1] * self.MPPC.shape[0], self.MPPC.shape[0]))
+
+        megafield_metadata = self.MPPC._assemble_megafield_metadata()
+        self.assertEqual(len(megafield_metadata.cell_parameters), self.MPPC.shape[0] * self.MPPC.shape[1])
 
         for cell_number, individual_cell in enumerate(megafield_metadata.cell_parameters):
             self.assertEqual(individual_cell.digital_gain, cell_number)
             self.assertEqual(individual_cell.x_eff_orig, 10 + cell_number)
             self.assertEqual(individual_cell.y_eff_orig, 20 + cell_number)
+            self.assertIsInstance(individual_cell.digital_gain, float)
+            self.assertIsInstance(individual_cell.x_eff_orig, int)
+            self.assertIsInstance(individual_cell.y_eff_orig, int)
 
-        # TODO K.K. add testing of setpoints
+        # Test multiple stage positions and check if both ints and floats works
+        stage_pos_generator = ((float(i), j) for i in range(0, 5) for j in range(0, 5))
+        for stage_pos in stage_pos_generator:
+            self.MPPC._metadata[model.MD_POS] = stage_pos
+            megafield_metadata = self.MPPC._assemble_megafield_metadata()
+            self.assertEqual(megafield_metadata.stage_position_x, stage_pos[0])
+            self.assertEqual(megafield_metadata.stage_position_y, stage_pos[1])
+            self.assertIsInstance(megafield_metadata.stage_position_x, float)
+            self.assertIsInstance(megafield_metadata.stage_position_x, float)
 
 
 class Test_ASMDataFlow(unittest.TestCase):
-    # TODO K.K. add test where (during acquisition VA's are changed (image from empty to full) if simulator is updated
 
     @classmethod
     def setUpClass(cls):
-        pass
+        if TEST_NOHW:
+            raise unittest.SkipTest('No simulator for the ASM and HwCompetents present. Skipping tests.')
 
     @classmethod
     def tearDownClass(cls):
@@ -734,6 +1039,19 @@ class Test_ASMDataFlow(unittest.TestCase):
         time.sleep(0.5)
         self.assertEqual(field_images[0] * field_images[1], self.counter)
 
+    def test_dataContent_received(self):
+        """
+        Tests if the appropriate image size is returned after calling with empty, thumbnail or full image as
+        datacontent by using the get field image method.
+        """
+        data_content_size = {"empty": (1, 1), "thumbnail": (100, 100), "full": self.EBeamScanner.resolution.value}
+
+        for key, value in DATA_CONTENT_TO_ASM.items():
+            dataflow = self.MPPC.data
+            image = dataflow.get(dataContent=key)
+            self.assertIsInstance(image, model.DataArray)
+            self.assertEqual(image.shape, data_content_size[key])
+
     def test_terminate(self):
         field_images = (3, 4)
         termination_point = (1, 3)
@@ -760,9 +1078,6 @@ class Test_ASMDataFlow(unittest.TestCase):
         dataflow.unsubscribe(self.image_received)
 
     def test_restart_acquistion(self):
-        #TODO K.K. test if queue is cleaned and thread is restarted after terminating/falling in error in acquistion
-        # thread
-        pass
         field_images = (3, 4)
         termination_point = (1, 3)
         self.counter = 0
@@ -788,7 +1103,6 @@ class Test_ASMDataFlow(unittest.TestCase):
         self.assertEqual((termination_point[0] * field_images[1]) + termination_point[1], self.counter)
         dataflow.unsubscribe(self.image_received)
 
-
         dataflow = self.MPPC.data
         dataflow.subscribe(self.image_2_received)
         self.assertEqual(self.MPPC._acq_thread.is_alive(), True)
@@ -796,7 +1110,8 @@ class Test_ASMDataFlow(unittest.TestCase):
                          "Queue was not cleared properly and is not empty")
         dataflow.next((0, 0))
         time.sleep(1.5)
-        self.assertEqual(1, self.counter)
+        self.assertEqual(1, self.counter2)
+        self.assertEqual((termination_point[0] * field_images[1]) + termination_point[1], self.counter)
 
     def test_two_folowing_mega_fields(self):
         field_images = (3, 4)
@@ -823,8 +1138,8 @@ class Test_ASMDataFlow(unittest.TestCase):
         dataflow.unsubscribe(self.image_received)
         dataflow.unsubscribe(self.image_2_received)
         time.sleep(0.5)
-        self.assertEqual(2 * field_images[0] * field_images[1], self.counter) # Test subscriber first megafield
-        self.assertEqual(field_images[0] * field_images[1], self.counter2) # Test subscriber second megafield
+        self.assertEqual(2 * field_images[0] * field_images[1], self.counter)  # Test subscriber first megafield
+        self.assertEqual(field_images[0] * field_images[1], self.counter2)  # Test subscriber second megafield
 
     def test_multiple_subscriptions(self):
         field_images = (3, 4)
@@ -867,12 +1182,11 @@ class Test_ASMDataFlow(unittest.TestCase):
         dataflow.unsubscribe(self.image_received)
         dataflow.unsubscribe(self.image_2_received)
         time.sleep(0.5)
-        self.assertEqual(field_images[0] * field_images[1], self.counter) # Check early subscriber
+        self.assertEqual(field_images[0] * field_images[1], self.counter)  # Check early subscriber
         self.assertEqual(
                 ((field_images[1] - add_second_subscription[1]) * field_images[0])
                 + field_images[0] - add_second_subscription[0],
-                self.counter2) # Check late subscriber
-
+                self.counter2)  # Check late subscriber
 
     def test_get_field_and_mega_field_combination(self):
         field_images = (3, 4)
@@ -896,7 +1210,7 @@ class Test_ASMDataFlow(unittest.TestCase):
         self.assertEqual(field_images[0] * field_images[1], self.counter)
         dataflow.unsubscribe(self.image_received)
 
-        # Acquire single field after unsubscribing listerner
+        # Acquire single field after unsubscribing listener
         image = dataflow.get()
         self.assertIsInstance(image, model.DataArray)
 
@@ -914,5 +1228,6 @@ class Test_ASMDataFlow(unittest.TestCase):
 
 
 if __name__ == '__main__':
+    # Set logger level to debug to observe all the output (useful when a test fails)
     logging.getLogger().setLevel(logging.DEBUG)
     unittest.main()
