@@ -133,6 +133,7 @@ class TestAcquisitionServer(unittest.TestCase):
         descanner = self.MirrorDescanner
         scanner = self.EBeamScanner
         ASM = self.ASM_manager
+        mppc = self.MPPC
 
         # Catch errors due to an incorrect defined set of calibration parameters so it is possible to check the
         # types in the object. If the types are incorrect the same error will be found later in the same test.
@@ -142,6 +143,7 @@ class TestAcquisitionServer(unittest.TestCase):
             logging.error("During activating the calibration mode the error %s occurred" % error)
 
         # Check types of calibration parameters (output send to the ASM) holding only primitive datatypes (int, float, string but not lists)
+
         calibration_parameters = ASM._calibrationParameters
         self.assertIsInstance(calibration_parameters, CalibrationLoopParameters)
         self.assertIsInstance(calibration_parameters.descan_rotation, float)
@@ -162,10 +164,12 @@ class TestAcquisitionServer(unittest.TestCase):
             self.assertIsInstance(y_setpoint, int)
 
         # Check scan setpoints
-        self.assertIsInstance(calibration_parameters.x_descan_setpoints, list)
-        self.assertIsInstance(calibration_parameters.y_descan_setpoints, list)
-        for x_setpoint, y_setpoint in zip(calibration_parameters.x_descan_setpoints,
-                                          calibration_parameters.y_descan_setpoints):
+        self.assertEqual(len(calibration_parameters.x_scan_setpoints), 9000)
+        self.assertEqual(len(calibration_parameters.y_scan_setpoints), 9000)
+        self.assertIsInstance(calibration_parameters.x_scan_setpoints, list)
+        self.assertIsInstance(calibration_parameters.y_scan_setpoints, list)
+        for x_setpoint, y_setpoint in zip(calibration_parameters.x_scan_setpoints,
+                                          calibration_parameters.y_scan_setpoints):
             self.assertIsInstance(x_setpoint, int)
             self.assertIsInstance(y_setpoint, int)
 
@@ -177,9 +181,10 @@ class TestAcquisitionServer(unittest.TestCase):
             self.assertEqual(ASM.calibrationMode.value, True)
             self.assertEqual(descanner.scanGain.value, (1.0, 0.0))
             self.assertEqual(scanner.scanGain.value, (1.0, 1.0))
+            self.assertEqual(len(calibration_parameters.x_scan_setpoints), 9000)
+            self.assertEqual(len(calibration_parameters.y_scan_setpoints), 9000)
 
             # Check subscription list
-            self.assertEqual(len(ASM.calibrationFrequency._listeners), 1)
             # Descanner subscriptions
             self.assertEqual(len(descanner.rotation._listeners), 1)
             self.assertEqual(len(descanner.scanOffset._listeners), 1)
@@ -193,6 +198,9 @@ class TestAcquisitionServer(unittest.TestCase):
             self.assertEqual(len(scanner.scanOffset._listeners), 1)
             self.assertEqual(len(scanner.scanGain._listeners), 1)
 
+            # MPPC subscriptions
+            self.assertEqual(len(mppc.cellCompleteResolution._listeners), 1)
+
             # Stop calibration loop
             ASM.calibrationMode.value = False
             # Check if VA's have the correct value
@@ -201,7 +209,6 @@ class TestAcquisitionServer(unittest.TestCase):
             self.assertEqual(scanner.scanGain.value, (1.0, 1.0))
 
             # Check subscription list
-            self.assertEqual(len(ASM.calibrationFrequency._listeners), 0)
             # Descanner subscriptions
             self.assertEqual(len(descanner.rotation._listeners), 0)
             self.assertEqual(len(descanner.scanOffset._listeners), 0)
@@ -214,6 +221,40 @@ class TestAcquisitionServer(unittest.TestCase):
             self.assertEqual(len(scanner.dwellTime._listeners), 0)
             self.assertEqual(len(scanner.scanOffset._listeners), 0)
             self.assertEqual(len(scanner.scanGain._listeners), 0)
+
+            # MPPC subscriptions
+            self.assertEqual(len(mppc.cellCompleteResolution._listeners), 0)
+
+    @unittest.skip  # Skip plotting of calibration setpoints
+    def test_plot_calibration_setpoints(self):
+        """
+        Test case for inspecting global behaviour of the calibration setpoint profiles.
+        """
+        import matplotlib.pyplot as plt
+        self.ASM_manager.calibrationMode.value = True
+        self.MirrorDescanner.scanGain.value = (10.0, 10.0)
+        self.EBeamScanner.scanGain.value = (10.0, 10.0)
+        time.sleep(0.5)  # Wait for the setpoints to be updated
+
+        calibration_parameters = self.ASM_manager._calibrationParameters
+        calibration_frequency = 1 / (self.EBeamScanner.dwellTime *
+                                     (self.MPPC.cellCompleteResolution + self.MirrorDescanner.physicalFlybackTime))
+
+        x_descan_setpoints = numpy.array(calibration_parameters.x_descan_setpoints)
+        y_descan_setpoints = numpy.array(calibration_parameters.y_descan_setpoints)
+        x_scan_setpoints = numpy.array(calibration_parameters.x_scan_setpoints)
+        y_scan_setpoints = numpy.array(calibration_parameters.y_scan_setpoints)
+
+        time_points_descanner = numpy.arange(0, 1 / calibration_frequency, self.MirrorDescanner.clockPeriod.value)
+        time_points_scanner = numpy.arange(0, 1 / calibration_frequency, 1 / (9000 * calibration_frequency))
+
+        fig, axs = plt.subplots(2)
+        axs[0].plot(time_points_descanner, 10 + x_descan_setpoints, "ro")
+        axs[1].plot(time_points_descanner, 10 + y_descan_setpoints, "xb")
+        axs[0].plot(time_points_scanner, x_scan_setpoints, "ro")
+        axs[1].plot(time_points_scanner, y_scan_setpoints, "xb")
+
+        self.ASM_manager.calibrationMode.value = False
 
 
 class TestEBeamScanner(unittest.TestCase):

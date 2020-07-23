@@ -37,11 +37,13 @@ from PIL import Image
 from io import BytesIO
 # TODO Add requests module to project requirements
 from urllib.parse import urlparse, urlunparse
+
 from requests import Session
 from scipy import signal
 
 from odemis import model
 from odemis.model import HwError
+from odemis.util import almost_equal
 
 from openapi_server.models.field_meta_data import FieldMetaData
 from openapi_server.models.mega_field_meta_data import MegaFieldMetaData
@@ -104,10 +106,9 @@ class AcquisitionServer(model.HwComponent):
                                                  setter=self._setURL)
         # VA's for calibration loop
         self.calibrationMode = model.BooleanVA(False, setter=self._setCalibrationMode)
-        # Frequency of the calibration signal
-        self.calibrationFrequency = model.IntContinuous(125, range=(125, 5000), unit="Hz")
-        # Holds the current calibration parameters (required for testing and prevents nasty debug because the API
-        # gives only minimal feedback on providing wrong parameters)
+
+        # CalibrationParameters holds the current calibration parameters (required for testing and prevents nasty
+        # debug because the API gives only minimal feedback on providing wrong parameters)
         self._calibrationParameters = None
 
         self.ASM_API_Post_Call("/config/set_external_storage?host=%s&user=%s&password=%s" %
@@ -241,14 +242,17 @@ class AcquisitionServer(model.HwComponent):
                                           (mega_field_id, storage_dir), 200, raw_response=True)
         return json.loads(response.content)["exists"]
 
-    def _startCalibration(self):
+    def _startCalibration(self, *args):
         """
         Call start calibration loop on the ASM and subscribe _startCalibration to all the VA's so the calibration
         loop is restarted, with updated parameters, when one of the VA's is changed.
+
+        *args is need to support self subscribing
         """
         self.ASM_API_Post_Call("/scan/stop_calibration_loop", 204)
         descanner = self._mirror_descanner
         scanner = self._ebeam_scanner
+        mppc = self._mppc
 
         # Retrieving and subscribing the descanner VA's
         descan_rotation = descanner.rotation.value
@@ -258,7 +262,8 @@ class AcquisitionServer(model.HwComponent):
         descanner.scanGain.subscribe(self._startCalibration)
 
         # Retrieving and subscribing the scanner VA's
-        dwell_time = scanner.getTicksDwellTime()
+        dwell_time = scanner.dwellTime.value
+        dwell_time_ticks = scanner.getTicksDwellTime()
         scanner.dwellTime.subscribe(self._startCalibration)
         scan_rotation = scanner.rotation.value
         scanner.rotation.subscribe(self._startCalibration)
@@ -268,27 +273,53 @@ class AcquisitionServer(model.HwComponent):
         scanner.scanOffset.subscribe(self._startCalibration)
         scanner.scanGain.subscribe(self._startCalibration)
 
-        # TODO K.K. Currently the specs of the creation of the setpoints are again discussed, this implementation can
-        # therefore change with a new PR in the near future
+        # Retrieving and subscribing the scanner VA
+        resolution = mppc.cellCompleteResolution.value[0]
+        mppc.cellCompleteResolution.subscribe(self._startCalibration)
+
+        # Check if the descanner clockperiod is still a multiple of de scanner clock period, otherwise raise error.
+        if not almost_equal(descanner.clockPeriod.value % scanner.clockPeriod.value, 0):
+            logging.error("Descanner and/or scanner clock period changed which means the descanner period is no "
+                          "longer a whole multiple of scanner clock periods. This means that calibration is no "
+                          "longer accurate.")
+            raise ValueError("Descanner clock period is no longer a whole multiple of the scanner clock period.")
 
         # Creation of setpoints
-        calibration_frequency = self.calibrationFrequency.value  # Frequency of the calibration signal in Hz
-        self.calibrationFrequency.subscribe(self._startCalibration)
+        flyback_time = descanner.physicalFlybackTime
+        remainder_scanning_time = (dwell_time * resolution) % descanner.clockPeriod.value
+        if remainder_scanning_time is not 0:
+            # Add adjusted flyback time if there is a remainder of scanning time by adding one setpoint to ensure the
+            # total scanning period is equal to a whole number of descan clock periods.
+            flyback_time = flyback_time + descanner.clockPeriod.value
 
-        time_points = numpy.arange(0, 100 / calibration_frequency, descanner.clockPeriod.value)
-        x_descan_setpoints = descanner.scanGain.value[0] * numpy.sin(2 * math.pi * calibration_frequency * time_points)
+        # Period of the calibration signal in seconds
+        calibration_period = (dwell_time * resolution) + flyback_time
+
+        # Support a callibration freq from 125 to 25000 Hz
+        if not scanner.dwellTime.range[0] < calibration_period < 0.008:
+            logging.error("Cannot perform calibration using a calibration frequency lower than 125 or 5000. With the "
+                          "given parameters the required calibration frequency would be %s." % (1/calibration_period))
+            raise ValueError("Calibration of given values requires a calibration frequency which is out of range.")
+        calibration_frequency = 1/calibration_period
+
+        # One period with points at a sampling period of the descanner clock period
+        time_points_descanner = numpy.arange(0, calibration_period, descanner.clockPeriod.value)
+        x_descan_setpoints = descanner.scanGain.value[0] * numpy.sin(2 * math.pi * calibration_frequency * time_points_descanner)
         y_descan_setpoints = descanner.scanGain.value[1] * signal.sawtooth(2 * math.pi * calibration_frequency *
-                                                                           time_points)
-        x_scan_setpoints = scanner.scanGain.value[0] * numpy.sin(2 * math.pi * calibration_frequency * time_points)
+                                                                           time_points_descanner)
+
+        # Scan sampling frequency is 9000 times the calibration frequency, meaning 9000 points per calibration period.
+        time_points_scanner = numpy.linspace(0, calibration_period, 9000)
+        x_scan_setpoints = scanner.scanGain.value[0] * numpy.sin(2 * math.pi * calibration_frequency * time_points_scanner)
         y_scan_setpoints = scanner.scanGain.value[1] * signal.sawtooth(2 * math.pi * calibration_frequency *
-                                                                       time_points)
+                                                                       time_points_scanner)
 
         callibration_data = CalibrationLoopParameters(descan_rotation,
                                                       descan_offset[0],
                                                       x_descan_setpoints.astype(int).tolist(),
                                                       descan_offset[1],
                                                       y_descan_setpoints.astype(int).tolist(),
-                                                      dwell_time,
+                                                      dwell_time_ticks,
                                                       scan_rotation,
                                                       scan_delay[0],
                                                       scan_offset[0],
@@ -299,13 +330,13 @@ class AcquisitionServer(model.HwComponent):
         self._calibrationParameters = callibration_data
         self.ASM_API_Post_Call("/scan/start_calibration_loop", 204, data=callibration_data.to_dict())
 
-    def _stopCalibration(self):
+    def _stopCalibration(self, *args):
         """
         Call stop calibration loop on the ASM and unsubscribe _startCalibration from all the VA's so the calibration
         loop is not restarted when a VA is changed.
-        """
-        self.calibrationFrequency.unsubscribe(self._startCalibration)
 
+        *args is need to support self subscribing
+        """
         # Unsubscribe the descanner VA's
         descanner = self._mirror_descanner
         descanner.scanGain.unsubscribe(self._startCalibration)
@@ -319,6 +350,9 @@ class AcquisitionServer(model.HwComponent):
         scanner.rotation.unsubscribe(self._startCalibration)
         scanner.scanDelay.unsubscribe(self._startCalibration)
         scanner.scanOffset.unsubscribe(self._startCalibration)
+
+        # Unsubscribe the mppc VA
+        self._mppc.cellCompleteResolution.unsubscribe(self._startCalibration)
 
         self._calibrationParameters = None
         self.ASM_API_Post_Call("/scan/stop_calibration_loop", 204)
