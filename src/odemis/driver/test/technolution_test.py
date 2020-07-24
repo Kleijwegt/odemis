@@ -215,6 +215,24 @@ class TestAcquisitionServer(unittest.TestCase):
             self.assertEqual(len(scanner.scanOffset._listeners), 0)
             self.assertEqual(len(scanner.scanGain._listeners), 0)
 
+    def test_checkMegaFieldExists(self):
+        """
+        Testing basics of checkMegaFieldExists functionality.
+        Note that the simulator will return for a valid input id + directory always True (Megafield exists).
+        """
+        ASM = self.ASM_manager
+
+        response = ASM.checkMegaFieldExists("correct_mega_field_id", "correct_storage_dir")
+        self.assertEqual(response, True)
+
+        response = ASM.checkMegaFieldExists("wrong#@$_mega_field_id", "correct_storage_dir")
+        self.assertEqual(response, False)
+
+        response = ASM.checkMegaFieldExists("correct_mega_field_id", "wrong@#$_storage_dir")
+        self.assertEqual(response, False)
+
+
+
 
 class TestEBeamScanner(unittest.TestCase):
     @classmethod
