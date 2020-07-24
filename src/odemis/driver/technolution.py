@@ -70,6 +70,8 @@ class AcquisitionServer(model.HwComponent):
         :param role (str): Role of the component
         :param host (str): URL of the host (ASM)
         :param children (dict): dictionary containing HW components and there respective configuration
+        :param externalStorage (dict): dictionary holding keys with the username, password, host and directory of the
+        external storage
         :param kwargs:
         """
 
@@ -221,19 +223,19 @@ class AcquisitionServer(model.HwComponent):
 
     def checkMegaFieldExists(self, mega_field_id, storage_dir):
         """
-        Check if filename complies with set allowed characters
+        Check if filename complies with set allowed characters.
         :param mega_field_id (string): name of the mega field.
         :param storage_dir (string): path to the mega field.
         :return (bool): True if mega field exists.
         """
         ASM_FILE_ILLEGAL_CHARS = r'[^a-z0-9_()-]'
         ASM_PATH_ILLEGAL_CHARS = r'[^A-Za-z0-9/_()-]'
-        if not re.search(ASM_PATH_ILLEGAL_CHARS, storage_dir):
+        if re.search(ASM_PATH_ILLEGAL_CHARS, storage_dir):
             logging.error("The specified storage directory contains invalid characters, cannot check if mega field "
                           "exists (only the characters '%s' are allowed)." % ASM_FILE_ILLEGAL_CHARS[2:-1])
             return False
 
-        if not re.search(ASM_FILE_ILLEGAL_CHARS, mega_field_id):
+        if re.search(ASM_FILE_ILLEGAL_CHARS, mega_field_id):
             logging.error("The specified mega_field_id contains invalid characters, cannot check if mega field exists"
                           "(only the characters '%s' are allowed)." % ASM_FILE_ILLEGAL_CHARS[2:-1])
             return False
@@ -370,6 +372,7 @@ class AcquisitionServer(model.HwComponent):
             if self._mppc.data._count_listeners() != 0:
                 logging.warning("Unsubscribing all the listeners from the mppc.dataflow, calibration mode cannot be "
                                 "started if the dataflow still has subscribers.")
+
                 while self._mppc.data._count_listeners() != 0:
                     try:
                         self._mppc.data._listeners.pop()
@@ -380,7 +383,7 @@ class AcquisitionServer(model.HwComponent):
             # Standard values of scan gain for calibration mode
             self._mirror_descanner.scanGain.value = (1.0, 0.0)
             self._ebeam_scanner.scanGain.value = (1.0, 1.0)
-            self._startCalibration()  # Start calibration loop and subscribe to VA's to reset calibration loop
+            self._startCalibration()  # Start calibration loop and subscribe to VA's to reload updated parameters
             return True
 
         else:
@@ -392,7 +395,7 @@ class AcquisitionServer(model.HwComponent):
 
     def _setURL(self, url):
         """
-        Setter which checks for correctness of FTP url_parser and otherwise returns old value.
+        Setter which checks for correctness of FTP url and otherwise returns old value.
 
         :param url(str): e.g. ftp://username:password@example.com
         :return: correct ftp url_parser
@@ -479,14 +482,14 @@ class EBeamScanner(model.Emitter):
 
     def getTicksScanDelay(self):
         """
-        :return: Scan delay in number of ticks of the ebeam scanner clock frequency
+        :return: Scan delay in multiple of ticks of the ebeam scanner clock frequency
         """
         return (int(self.scanDelay.value[0] / self.clockPeriod.value),
                 int(self.scanDelay.value[1] / self.clockPeriod.value))
 
     def getTicksDwellTime(self):
         """
-        :return: Dwell time in number of ticks of the ebeam scanner clock frequency
+        :return: Dwell time in multiple of ticks of the ebeam scanner clock frequency
         """
         return int(self.dwellTime.value / self.clockPeriod.value)
 
@@ -547,10 +550,6 @@ class MirrorDescanner(model.Emitter):
         self.scanGain = model.TupleContinuous((10.0, 10.0), range=((-1000.0, -1000.0), (1000.0, 1000.0)), unit='V')
 
         clockFrequencyData = self.parent.ASM_API_Get_Call("/scan/descan_control_frequency", 200)
-        # Check if clockFrequencyData holds the proper key
-        if 'frequency' not in clockFrequencyData:
-            raise IOError("Could not obtain clock frequency, received data does not hold the proper key")
-        self.clockFrequency = clockFrequencyData['frequency']
         self.clockPeriod = model.FloatVA(1 / clockFrequencyData['frequency'], unit='s', readonly=True)
 
         # TODO check if physicalFlybackTime is constant and what time it should be for EA calibrate --> Wilco & Andries
@@ -569,23 +568,29 @@ class MirrorDescanner(model.Emitter):
         """
         descan_period = self.clockPeriod.value  # in seconds
         dwelltime = self.parent._ebeam_scanner.dwellTime.value  # in seconds
-        X_scan_gain = self.scanGain.value[0]
-        X_scan_offset = self.scanOffset.value[0]
+        X_descan_gain = self.scanGain.value[0]
+        X_descan_offset = self.scanOffset.value[0]
         X_cell_size = self.parent._mppc.cellCompleteResolution.value[0]  # pixels
+        # Scanning time which does not fall in a multiple of whole descan periods
+        remainder_scanning_time = (dwelltime * X_cell_size) % descan_period
 
         # all units in seconds
-        scanning_points = numpy.array(list(map(lambda t: (X_scan_gain / dwelltime) * t,
+        scanning_points = numpy.array(list(map(lambda t: (X_descan_gain / dwelltime) * t,
                                                numpy.arange(0, dwelltime * X_cell_size, descan_period))))
 
-        # Calculation flyback_points is faster but the same as:
+        # Calculation flyback_points part in numpy zeros is faster but the same as:
         # '0 * numpy.arange(0, self.physicalFlybackTime, descan_period)'
         flyback_points = numpy.zeros(math.ceil(self.physicalFlybackTime / descan_period))
+        if remainder_scanning_time != 0:
+            # Add adjusted flyback time if there is a remainder of scanning time by adding one setpoint to ensure the
+            # total scanning period is equal to a whole number of descan clock periods.
+            flyback_points = numpy.hstack((X_descan_gain * X_cell_size, flyback_points))
 
-        base = X_scan_offset - 0.5 * X_cell_size * X_scan_gain
+        base = X_descan_offset - 0.5 * X_cell_size * X_descan_gain
         setpoints = base + numpy.concatenate((scanning_points, flyback_points))
 
         if setpoints.min() < -32768 or setpoints.max() > 32767:
-            raise ValueError("Setpoint values are to big/small to be handled by the ASM API.")
+            raise ValueError("Acquisition setpoints for the descanner are out of range as excepted by the ASM API.")
         return setpoints.astype(int).tolist()
 
     def getYAcqSetpoints(self):
@@ -609,7 +614,7 @@ class MirrorDescanner(model.Emitter):
             raise ValueError("Error in creation of Y_scan setpoints.")
 
         if setpoints.min() < -32768 or setpoints.max() > 32767:
-            raise ValueError("Setpoint values are to big/small to be handled by the ASM API.")
+            raise ValueError("Acquisition setpoints for the descanner are out of range as excepted by the ASM API.")
         return setpoints.astype(int).tolist()
 
 
@@ -647,7 +652,7 @@ class MPPC(model.Detector):
         self.cellDigitalGain = model.TupleVA(
                 tuple(tuple(1.2 for i in range(0, self.shape[0])) for i in range(0, self.shape[1]))
                 , setter=self._setCellDigitalGain)
-        self.cellCompleteResolution = model.ResolutionVA((800, 800), ((10, 10), (1000, 1000)))
+        self.cellCompleteResolution = model.ResolutionVA((900, 900), ((10, 10), (1000, 1000))) #Includes overlap pixels
 
         # Setup hw and sw version
         # TODO make call set_system_sw_name to new simulator (if implemented in simulator)
@@ -927,7 +932,7 @@ class MPPC(model.Detector):
 
     def getTicksAcqDelay(self):
         """
-        :return: Acq delay in number of ticks of the ebeam scanner clock frequency
+        :return: Acq delay in multiple of ticks of the ebeam scanner clock frequency
         """
         return int(self.acqDelay.value / self._scanner.clockPeriod.value)
 
