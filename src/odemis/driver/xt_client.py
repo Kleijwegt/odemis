@@ -2,7 +2,7 @@
 """
 Created on 16 Aug 2019
 
-@author: Thera Pals
+@author: Thera Pals, Kornee Kleijwegt
 
 Copyright © 2019 Thera Pals, Delmic
 
@@ -790,6 +790,77 @@ class SEM(model.HwComponent):
             self.server._pyroClaimOwnership()
             return self.server.set_use_case(state)
 
+    def get_mpp_orientation(self):
+        """
+        Get the current multi probe orientation in degrees.
+
+        :return (float): Multi orientation in degrees
+        """
+        with self._proxy_access:
+            self.server._pyroClaimOwnership()
+            return self.server.get_mpp_orientation()
+
+    def get_aperture_index(self):
+        """
+        Get the current aperture index.
+
+        :return (float): Aperture index (range 0 - 14)
+        """
+        with self._proxy_access:
+            self.server._pyroClaimOwnership()
+            return self.server.get_aperture_index()
+
+    def set_aperture_index(self, aperture_idx):
+        """
+        Set the current aperture index.
+
+        :param aperture_idx:  (float): Aperture index (range 0 - 14)
+        """
+        with self._proxy_access:
+            self.server._pyroClaimOwnership()
+            self.server.set_aperture_index(aperture_idx)
+
+    def aperture_index_info(self):
+        """
+        Get the current aperture index information, contains the range (0 - 14).
+
+        :return (dict with a list of lenght 2): The range of the aperture index for the keyword "range".
+        """
+        with self._proxy_access:
+            self.server._pyroClaimOwnership()
+            return self.server.aperture_index_info()
+
+    def get_beamlet_index(self):
+        """
+        Get the current beamlet index.
+
+        :return (tuple of floats): Beamlet index (range 1 - 8)
+        """
+        with self._proxy_access:
+            self.server._pyroClaimOwnership()
+            # Convert to tuple so the output could be directly compaired (or used as input) for the set method.
+            return tuple(self.server.get_beamlet_index())
+
+    def set_beamlet_index(self, beamlet_idx):
+        """
+        Set the current beamlet index.
+
+        :param beamlet_idx:  (tuple of floats): Beamlet index (range 1 - 8)
+        """
+        with self._proxy_access:
+            self.server._pyroClaimOwnership()
+            self.server.set_beamlet_index(*beamlet_idx)
+
+    def beamlet_index_info(self):
+        """
+        Get the current beamlet index information, contains the range in x and y direction (1 - 8).
+
+        :return (dict with a sub-dict which has lists of lenght 2): The range of the beamlet index for the keyword
+        "range" and in that sub dictonary either of the keywords "x-direction"/"y-direction".
+        """
+        with self._proxy_access:
+            self.server._pyroClaimOwnership()
+            return self.server.beamlet_index_info()
 
 class Scanner(model.Emitter):
     """

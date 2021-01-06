@@ -43,10 +43,10 @@ CONFIG_STAGE = {"name": "stage", "role": "stage",
                 "inverted": ["x"],
                 }
 CONFIG_FOCUS = {"name": "focuser", "role": "ebeam-focus"}
-CONFIG_SEM = {"name": "sem", "role": "sem", "address": "PYRO:Microscope@192.168.31.130:4242",
+CONFIG_SEM = {"name": "sem", "role": "sem", "address": "PYRO:Microscope@192.168.10.2:4242",
               "children": {"scanner": CONFIG_SCANNER,
                            "focus": CONFIG_FOCUS,
-                           "stage": CONFIG_STAGE,
+                           # "stage": CONFIG_STAGE,
                            }
               }
 
@@ -230,7 +230,6 @@ class TestMicroscope(unittest.TestCase):
         self.assertEqual(self.scanner.rotation.value, init_rotation + 0.01)
         self.scanner.rotation.value = init_rotation
 
-
 class TestMicroscopeInternal(unittest.TestCase):
     """
     Test calling the internal of the Microscope client class directly.
@@ -246,8 +245,8 @@ class TestMicroscopeInternal(unittest.TestCase):
                 cls.scanner = child
             elif child.name == CONFIG_FOCUS["name"]:
                 cls.efocus = child
-            elif child.name == CONFIG_STAGE["name"]:
-                cls.stage = child
+            # elif child.name == CONFIG_STAGE["name"]:
+            #     cls.stage = child
 
     def setUp(self):
         if TEST_NOHW:
@@ -711,6 +710,72 @@ class TestMicroscopeInternal(unittest.TestCase):
         time.sleep(2.5)  # Give microscope/simulator the time to update the state
         autofocus_state = self.microscope.is_autofocusing(channel)
         self.assertEqual(autofocus_state, False)
+
+    def test_get_mpp_orientation(self):
+        """
+        Simple test, checks if no error occur during calling the method and the return value.
+        """
+        mpp_orientation = self.microscope.get_mpp_orientation()
+        self.assertIsInstance(mpp_orientation, float)
+        # TODO K.K. check range with Wilco
+        self.assertTrue(0 < mpp_orientation < 360)
+
+    def test_get_aperture_index(self):
+        """
+        Simple test, checks if no error occur during calling the method and the return value.
+        """
+        aperture_index = self.microscope.get_aperture_index()
+        self.assertIsInstance(aperture_index, float)
+        self.assertTrue(0 < aperture_index < 14)
+
+    def test_set_aperture_index(self):
+        """
+        Simple test, checks if no error occur during calling the method.
+        """
+        # TODO Check if setting of the value actually happens and if an int value is also allowed.
+        self.microscope.set_aperture_index(10)
+        aperture_index = self.microscope.get_aperture_index()
+        self.assertEqual(aperture_index, 10)
+
+    def test_aperture_index_info(self):
+        """
+        Simple test, checks if no error occur during calling the method and the return value.
+        """
+        aperture_index_info = self.microscope.aperture_index_info()
+        self.assertIsInstance(aperture_index_info, dict)
+        self.assertIsInstance(aperture_index_info["range"], list)
+        self.assertEqual(len(aperture_index_info["range"]), 2)
+
+    def test_get_beamlet_index(self):
+        """
+        Simple test on checks if no error occur during calling the method and the return value.
+        """
+        beamlet_index = self.microscope.get_beamlet_index()
+        self.assertIsInstance(beamlet_index, tuple)
+        self.assertEqual(len(beamlet_index), 2)
+        self.assertTrue(1 < beamlet_index[0] < 8)
+        self.assertTrue(1 < beamlet_index[1] < 8)
+
+    def test_set_beamlet_index(self):
+        """
+        Simple test on checks if no error occur during calling the method and the return value.
+        """
+        # TODO Check if setting of the value actually happens and if an int value is also allowed.
+        self.microscope.set_beamlet_index((4, 4))
+        beamlet_index = self.microscope.get_beamlet_index()
+        self.assertEqual(beamlet_index, (4, 4))
+
+    def test_beamlet_index_info(self):
+        """
+        Simple test on checks if no error occur during calling the method and the return value.
+        """
+        beamlet_index_info = self.microscope.beamlet_index_info()
+        self.assertIsInstance(beamlet_index_info, dict)
+        self.assertIsInstance(beamlet_index_info["range"], dict)
+        self.assertIsInstance(beamlet_index_info["range"]["x-direction"], list)
+        self.assertIsInstance(beamlet_index_info["range"]["y-direction"], list)
+        self.assertEqual(len(beamlet_index_info["range"]["x-direction"]), 2)
+        self.assertEqual(len(beamlet_index_info["range"]["y-direction"]), 2)
 
 
 if __name__ == '__main__':
