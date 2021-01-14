@@ -794,7 +794,7 @@ class SEM(model.HwComponent):
         """
         Get the current multi probe orientation in degrees.
 
-        :return (float): Multi orientation in degrees
+        :return (float): Multi probe orientation in degrees
         """
         with self._proxy_access:
             self.server._pyroClaimOwnership()
@@ -814,7 +814,7 @@ class SEM(model.HwComponent):
         """
         Set the current aperture index.
 
-        :param aperture_idx:  (float): Aperture index (range 0 - 14)
+        :param aperture_idx  (float): Aperture index (range 0 - 14)
         """
         with self._proxy_access:
             self.server._pyroClaimOwnership()
@@ -832,20 +832,19 @@ class SEM(model.HwComponent):
 
     def get_beamlet_index(self):
         """
-        Get the current beamlet index.
+        Get the current beamlet index which is represented by the two values in a grid (x,y).
 
         :return (tuple of floats): Beamlet index (range 1 - 8)
         """
         with self._proxy_access:
             self.server._pyroClaimOwnership()
-            # Convert to tuple so the output could be directly compaired (or used as input) for the set method.
             return tuple(self.server.get_beamlet_index())
 
     def set_beamlet_index(self, beamlet_idx):
         """
-        Set the current beamlet index.
+        Set the current beamlet index which is represented by the two values in a grid (x,y).
 
-        :param beamlet_idx:  (tuple of floats): Beamlet index (range 1 - 8)
+        :param beamlet_idx: (tuple of floats): Beamlet index (range 1 - 8)
         """
         with self._proxy_access:
             self.server._pyroClaimOwnership()

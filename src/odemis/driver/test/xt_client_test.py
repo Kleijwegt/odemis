@@ -713,8 +713,11 @@ class TestMicroscopeInternal(unittest.TestCase):
 
     def test_get_mpp_orientation(self):
         """
-        Simple test, checks if no error occur during calling the method and the return value.
+        Test getting the multiprobe pattern orientation.
         """
+        if self.xt_type != 'xttoolkit':
+            self.skipTest("This test needs XTToolkit to run.")
+
         mpp_orientation = self.microscope.get_mpp_orientation()
         self.assertIsInstance(mpp_orientation, float)
         # TODO K.K. check range with Wilco
@@ -722,25 +725,42 @@ class TestMicroscopeInternal(unittest.TestCase):
 
     def test_get_aperture_index(self):
         """
-        Simple test, checks if no error occur during calling the method and the return value.
+        Test getting the aperture index.
         """
+        if self.xt_type != 'xttoolkit':
+            self.skipTest("This test needs XTToolkit to run.")
+
         aperture_index = self.microscope.get_aperture_index()
         self.assertIsInstance(aperture_index, float)
-        self.assertTrue(0 < aperture_index < 14)
+        self.assertTrue(0 <= aperture_index <= 14)
 
     def test_set_aperture_index(self):
         """
-        Simple test, checks if no error occur during calling the method.
+        Test setting the aperture index.
         """
-        # TODO Check if setting of the value actually happens and if an int value is also allowed.
-        self.microscope.set_aperture_index(10)
+        if self.xt_type != 'xttoolkit':
+            self.skipTest("This test needs XTToolkit to run.")
+
+        range = tuple(self.microscope.aperture_index_info()["range"])
+        current_aperture_index = self.microscope.get_aperture_index()
+        new_aperture_index = current_aperture_index + 1 if range[0] <=current_aperture_index < range[1] else \
+                             current_aperture_index -1
+
+        self.microscope.set_aperture_index(new_aperture_index)
         aperture_index = self.microscope.get_aperture_index()
-        self.assertEqual(aperture_index, 10)
+        self.assertEqual(aperture_index, new_aperture_index)
+
+        self.microscope.set_aperture_index(current_aperture_index)
+        aperture_index = self.microscope.get_aperture_index()
+        self.assertEqual(aperture_index, current_aperture_index)
 
     def test_aperture_index_info(self):
         """
-        Simple test, checks if no error occur during calling the method and the return value.
+        Test getting the aperture index info.
         """
+        if self.xt_type != 'xttoolkit':
+            self.skipTest("This test needs XTToolkit to run.")
+
         aperture_index_info = self.microscope.aperture_index_info()
         self.assertIsInstance(aperture_index_info, dict)
         self.assertIsInstance(aperture_index_info["range"], list)
@@ -748,27 +768,47 @@ class TestMicroscopeInternal(unittest.TestCase):
 
     def test_get_beamlet_index(self):
         """
-        Simple test on checks if no error occur during calling the method and the return value.
+        Test getting the beamlet index.
         """
+        if self.xt_type != 'xttoolkit':
+            self.skipTest("This test needs XTToolkit to run.")
+
         beamlet_index = self.microscope.get_beamlet_index()
         self.assertIsInstance(beamlet_index, tuple)
         self.assertEqual(len(beamlet_index), 2)
-        self.assertTrue(1 < beamlet_index[0] < 8)
-        self.assertTrue(1 < beamlet_index[1] < 8)
+        self.assertTrue(1 <= beamlet_index[0] <= 8)
+        self.assertTrue(1 <= beamlet_index[1] <= 8)
 
     def test_set_beamlet_index(self):
         """
-        Simple test on checks if no error occur during calling the method and the return value.
+        Test setting the beamlet index.
         """
-        # TODO Check if setting of the value actually happens and if an int value is also allowed.
+        if self.xt_type != 'xttoolkit':
+            self.skipTest("This test needs XTToolkit to run.")
+
         self.microscope.set_beamlet_index((4, 4))
         beamlet_index = self.microscope.get_beamlet_index()
         self.assertEqual(beamlet_index, (4, 4))
 
+        current_index = self.microscope.get_beamlet_index()
+        # Make sure both the x and the y value are changed.
+        new_beamlet_index = (3,3) if 3 not in current_index else (5,5) if 5 not in current_index else (6,6)
+
+        self.microscope.set_beamlet_index(new_beamlet_index)
+        beamlet_index = self.microscope.get_beamlet_index()
+        self.assertEqual(beamlet_index, new_beamlet_index)
+
+        self.microscope.set_beamlet_index(current_index)
+        beamlet_index = self.microscope.get_beamlet_index()
+        self.assertEqual(beamlet_index, current_index)
+
     def test_beamlet_index_info(self):
         """
-        Simple test on checks if no error occur during calling the method and the return value.
+        Test getting the beamlet index info.
         """
+        if self.xt_type != 'xttoolkit':
+            self.skipTest("This test needs XTToolkit to run.")
+
         beamlet_index_info = self.microscope.beamlet_index_info()
         self.assertIsInstance(beamlet_index_info, dict)
         self.assertIsInstance(beamlet_index_info["range"], dict)
